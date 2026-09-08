@@ -1,0 +1,14 @@
+# DeepSeek Harness bundle patch for thesis-review-dsh-plugin.
+#
+# This layer is applied when a DSH profile lists this package in
+# `dsh.profile.bundles`. It inserts the plugin row by package name so Node
+# resolution finds the installed code. Defaults live in the plugin's `Config`
+# schema; override them (e.g. thesisReviewAgentPath) in your profile's own
+# cordis.patch.yml rather than editing this file.
+- insert:
+    - id: thesis-review
+      name: thesis-review-dsh-plugin
+      config:
+        # Path to a local thesis-review-agent checkout. MUST be set by the
+        # deployment; the plugin fails closed (no tools) when it is empty.
+        thesisReviewAgentPath: ''
