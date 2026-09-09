@@ -1,10 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { WorkerSession } from '../session.ts'
-import { defineWorkerTool, type WorkerToolSpec } from './common.ts'
-
-/** Any lossless JSON value; the shape worker results conform to. */
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+import { defineWorkerTool, runWorkerOp, sessionKeyFor, type WorkerToolSpec } from './common.ts'
 
 /**
  * Navigation tools: open the draft and read bounded windows of it.
@@ -39,11 +36,18 @@ export function defineOpenTool(session: WorkerSession, timeoutMs?: number): Tool
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    async execute(args) {
+    async execute(args, exec) {
+      // Reading the file and base64-encoding it is protocol plumbing; a missing or
+      // unreadable path is an INFRASTRUCTURE failure, so it throws (DSH marks the
+      // call as an error). The worker's own open_draft rejection (e.g. open_failed)
+      // is a DOMAIN outcome, so it is returned structured with its code intact.
+      // Honor the Harness deadline before doing any work so an already-aborted call
+      // does not read and ship a document nobody is waiting for.
+      if (exec?.signal?.aborted) throw new Error('tool call aborted before dispatch.')
       const bytes = await readFile(args.path)
       const params: Record<string, unknown> = { bytes_b64: bytes.toString('base64') }
       if (args.draft_id !== undefined) params.draft_id = args.draft_id
-      return (await session.call('open_draft', params)) as JsonValue
+      return runWorkerOp(session, 'open_draft', params, sessionKeyFor(exec), exec?.signal)
     },
   })
 }
