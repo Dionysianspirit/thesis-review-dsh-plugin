@@ -12,6 +12,26 @@ import {
 } from './helpers.ts'
 import type { Config } from '../src/config.ts'
 
+/**
+ * Evidence gate test — integration against the REAL Python worker.
+ *
+ * This is the core acceptance proof: the Harness tools reach the main project's
+ * evidence gate, and that gate (not this adapter) decides what may be written.
+ *
+ * Scenarios (fixtures come from thesis_review.fixtures in the MAIN project):
+ *  - overclaim: "实验结果表明该方法显著提升了分类准确率。" vs
+ *               "准确率由 0.81 提高到 0.83。"  -> real quotes are accepted.
+ *  - invented evidence quote                    -> worker rejects (quote_not_in_draft).
+ *  - missing claim quote                        -> worker rejects (quote_not_in_draft).
+ *  - "再次" wording                             -> worker rejects (repeat_wording).
+ *  - more than 3 findings                       -> worker rejects (argument_limit).
+ *  - supported claim (0.91 vs 0.72, p<0.01)     -> a finding is NOT written; the
+ *                                                 agent may simply commit.
+ *  - commit writes reviewed.docx + findings.json.
+ *
+ * PLUMBING/evidence-gate proof, not a real-model capability test.
+ */
+
 const skipReason = integrationSkipReason()
 const root = resolveAgentRoot()
 const python = resolvePython()
@@ -40,6 +60,13 @@ interface Tool {
   execute: (args: unknown, exec: unknown) => Promise<unknown>
 }
 
+/**
+ * A DOMAIN rejection is now surfaced to the model as a structured tool result
+ * `{ ok:false, error:{ code, message } }` (NOT a throw), so the worker's code
+ * survives to the model — DSH would otherwise flatten a thrown error to
+ * `Error: <message>` and drop the code. This asserts that structured shape and
+ * that the worker really did refuse (ok:false), keeping the gate honest.
+ */
 function expectDomainRejection(result: unknown, code: string): void {
   expect(result).toMatchObject({ ok: false, error: { code } })
 }
@@ -133,7 +160,7 @@ describeOrSkip('evidence gate (real Python worker)', () => {
     }
   })
 
-  it('rejects 「再次」/「屡次」 wording in an argument finding', async () => {
+  it('rejects 「再次」/「鱡次」 wording in an argument finding', async () => {
     const { session, tools } = makeSession()
     try {
       await tools.thesis_open!.execute({ path: overclaimDocx }, exec())
@@ -143,7 +170,7 @@ describeOrSkip('evidence gate (real Python worker)', () => {
             claim_quote: OVERCLAIM_CLAIM,
             evidence_quote: OVERCLAIM_EVIDENCE,
             problem: '该问题再次出现。',
-            rationale: '屡次夸大结论。',
+            rationale: '鱡次夸大结论。',
           },
           exec(),
         ),
