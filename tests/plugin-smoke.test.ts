@@ -22,6 +22,9 @@ function makeCtx(overrides: Partial<Record<string, unknown>> = {}) {
   const tools = new RecordingToolRegistry()
   const effects: (() => void)[] = []
   const sections: unknown[] = []
+  // Real Cordis ctx.on(name, listener) registers into a hook map and does NOT
+  // throw for an event no service declared — it simply never fires. Mirror that:
+  // record listeners by event name so a test can emit and assert cleanup wiring.
   const listeners: Record<string, ((payload: unknown) => void)[]> = {}
   const on = (name: string, listener: (payload: unknown) => void): (() => void) => {
     const list = (listeners[name] ??= [])
@@ -34,6 +37,11 @@ function makeCtx(overrides: Partial<Record<string, unknown>> = {}) {
   const emit = (name: string, payload: unknown): void => {
     for (const listener of listeners[name] ?? []) listener(payload)
   }
+  // Real Cordis resolves un-injected peer services through ctx.reflect.get(name,
+  // strict): strict=false returns undefined when the service is absent instead of
+  // throwing. The plugin probes `systemPrompt` this way, so the double mirrors it:
+  // services live in a registry the reflect.get probe reads, never as a bare
+  // ctx.systemPrompt property (which real Cordis would refuse to hand out).
   const services: Record<string, unknown> = {
     systemPrompt: { section: (s: unknown) => { sections.push(s); return () => {} } },
   }
@@ -47,6 +55,7 @@ function makeCtx(overrides: Partial<Record<string, unknown>> = {}) {
       return () => {}
     },
     reflect: {
+      // strict=false → non-throwing lookup, exactly like Cordis internals.
       get: (name: string, strict = true) => {
         if (name in services) return services[name]
         if (!strict) return undefined
