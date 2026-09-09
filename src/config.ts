@@ -25,6 +25,21 @@ export interface Config {
   major: string
   /** Worker transport: line-delimited JSON over stdio or a TCP portfile. */
   transport: 'stdio' | 'tcp'
+  /**
+   * The worker's `--home`: the directory holding its `thesis-review.sqlite`
+   * history store. Empty by default, in which case each worker uses a fresh temp
+   * home so the plugin never writes into the main repo — correct for the
+   * claim-evidence mode, which needs no persisted history.
+   *
+   * When `enableHistory` is true this MUST resolve to the real thesis-review
+   * history home (set `workerHome` here, or export `THESIS_REVIEW_HOME`, or rely
+   * on the main project's platform default that already contains a store). If no
+   * valid history home can be resolved the plugin refuses to register the history
+   * tools rather than silently pointing them at an empty temp DB that would report
+   * 0 candidates and mislead the model. It must never point inside the
+   * thesis-review-agent checkout (guarded by worker-client's `unsafe_home`).
+   */
+  workerHome: string
   /** Startup timeout in ms while waiting for the worker to become ready. */
   startupTimeoutMs: number
   /** Per-tool-call timeout in ms forwarded to exec.signal budgeting. */
@@ -45,6 +60,7 @@ export const Config = Schema.object({
   studentId: Schema.string().default('dsh'),
   major: Schema.string().default('人工智能'),
   transport: Schema.union(['stdio', 'tcp']).default('stdio'),
+  workerHome: Schema.string().default(''),
   startupTimeoutMs: Schema.number().default(20000),
   toolTimeoutMs: Schema.number().default(60000),
   enablePreset: Schema.boolean().default(true),
