@@ -14,7 +14,7 @@
 //   Integration       — real Python worker + real thesis-review-agent checkout
 //                       (tool-mapping, worker-client, evidence-gate,
 //                        session-isolation, agent-loop-faux). Skips when the
-//                        checkout / python / vendored docxengine is missing.
+//                       checkout / python / vendored docxengine is missing.
 //   Resilience        — real Python SUBPROCESS with misbehaving fake workers
 //                       (worker-resilience). Needs only python.
 //   Real DSH loader   — scripts/dsh-smoke.mjs registration half (real Cordis +
@@ -50,8 +50,6 @@ function resolveAgentRoot() {
   return null
 }
 const agentRoot = resolveAgentRoot() || ''
-// Propagate the resolved root to child processes so the vitest integration tier
-// and the dsh-smoke dispatch half see exactly what this report describes.
 if (agentRoot) process.env.THESIS_REVIEW_AGENT_PATH = agentRoot
 
 const TIERS = {
@@ -79,7 +77,6 @@ function pythonOnlySkipReason() {
   return null
 }
 
-/** Run a vitest tier and summarize passed/failed/skipped from the JSON reporter. */
 function runVitestTier(files) {
   const cacheDir = path.join(repoRoot, 'node_modules', '.cache')
   mkdirSync(cacheDir, { recursive: true })
@@ -105,12 +102,6 @@ function runVitestTier(files) {
   return summary
 }
 
-/**
- * Run dsh-smoke and count only the lines belonging to the requested half.
- * The smoke always prints 3 registration checks first; the dispatch half adds 3
- * more prefixed with "real dispatch:". `dispatch:false` counts registration only
- * (and the dispatch SKIP), `dispatch:true` counts the dispatch checks.
- */
 function runSmoke({ dispatch }) {
   const env = { ...process.env }
   if (!dispatch) delete env.THESIS_REVIEW_AGENT_PATH
@@ -148,10 +139,8 @@ function line(name, s, note = '') {
 console.log('=== thesis-review-dsh-plugin real test report ===\n')
 const results = {}
 
-// Unit
 results.Unit = line('Unit', runVitestTier(TIERS.Unit))
 
-// Integration (real Python worker)
 const intSkip = integrationSkipReason()
 if (intSkip) {
   results.Integration = line('Integration', { passed: 0, failed: 0, skipped: TIERS.Integration.length, ran: true }, `SKIPPED: ${intSkip}`)
@@ -159,7 +148,6 @@ if (intSkip) {
   results.Integration = line('Integration', runVitestTier(TIERS.Integration), 'real Python worker')
 }
 
-// Resilience (real Python subprocess)
 const resSkip = pythonOnlySkipReason()
 if (resSkip) {
   results.Resilience = line('Resilience', { passed: 0, failed: 0, skipped: 1, ran: true }, `SKIPPED: ${resSkip}`)
@@ -167,11 +155,9 @@ if (resSkip) {
   results.Resilience = line('Resilience', runVitestTier(TIERS.Resilience), 'real subprocess, fake workers')
 }
 
-// Real DSH loader (registration half — always runnable)
 const reg = runSmoke({ dispatch: false })
 results['Real DSH loader'] = line('Real DSH loader', reg, 'real Cordis + dsh-tools, plugin registration')
 
-// Real DSH dispatch (needs checkout + python)
 if (intSkip) {
   results['Real DSH dispatch'] = line('Real DSH dispatch', { passed: 0, failed: 0, skipped: 1, ran: true }, `SKIPPED: ${intSkip}`)
 } else {
@@ -179,7 +165,6 @@ if (intSkip) {
   results['Real DSH dispatch'] = line('Real DSH dispatch', disp, 'real scheduler -> real Python worker')
 }
 
-// Real model
 results['Real model'] = line('Real model', { passed: 0, failed: 0, skipped: 1, ran: true }, 'NOT RUN: no DSH model API key in this environment')
 
 console.log('\n=== matrix ===')
