@@ -9,24 +9,8 @@ import { navigationTools } from '../src/tools/document.ts'
 import { resolvePython } from './helpers.ts'
 import type { Config } from '../src/config.ts'
 
-/**
- * Worker resilience tests — Checklist 4 (timeout / abort / crash / dispose).
- *
- * These drive the REAL worker client (startWorker + WorkerSession + the real
- * tools), never a hand-rolled replica. Where a well-behaved worker cannot
- * reproduce a failure, we build a throwaway fake agent root whose
- * python/thesis_review/worker.py hangs, crashes, or stalls — exactly what
- * `python -m thesis_review.worker` would spawn — so the real client code path
- * is exercised end to end.
- *
- * The class of bug guarded here: a request that would otherwise leave a Promise
- * pending FOREVER (startup never answered, worker died mid-call, socket
- * dropped, Harness deadline fired) or crash the host with an unhandled EPIPE.
- */
-
 const python = resolvePython()
 
-/** Build a fake thesis-review-agent root with a custom worker.py body. */
 function fakeRoot(workerPy: string): string {
   const root = mkdtempSync(path.join(tmpdir(), 'dsh-fake-agent-'))
   const pkg = path.join(root, 'python', 'thesis_review')
@@ -36,13 +20,6 @@ function fakeRoot(workerPy: string): string {
   return root
 }
 
-/**
- * A unique worker `--home` per test. The worker is spawned as
- * `python -m thesis_review.worker --home <home> ...`, so `<home>` appears in its
- * argv — that is the only reliable, collision-free handle for finding (or proving
- * the absence of) this test's Python process. It must NOT be inside the agent
- * root (the unsafe_home guard), so use a separate temp dir.
- */
 function fakeHome(): string {
   return mkdtempSync(path.join(tmpdir(), 'dsh-worker-home-'))
 }
@@ -57,7 +34,6 @@ const baseConfig = (root: string, extra: Partial<Parameters<typeof startWorker>[
   ...extra,
 }) as Parameters<typeof startWorker>[0]
 
-/** Assert a promise rejects (does not hang) and resolves the outcome fast. */
 async function expectRejectsFast(promise: Promise<unknown>, withinMs: number): Promise<WorkerError> {
   const started = Date.now()
   let outcome: { kind: 'rejected'; error: unknown } | { kind: 'resolved' } | { kind: 'hung' }
@@ -74,17 +50,6 @@ async function expectRejectsFast(promise: Promise<unknown>, withinMs: number): P
   return (outcome as { kind: 'rejected'; error: WorkerError }).error
 }
 
-/**
- * Poll until no `thesis_review.worker` python process carrying `marker` remains,
- * or the budget expires. dispose() sends SIGTERM; the kernel needs a moment to
- * reap it, so a single synchronous `ps` snapshot could race the teardown.
- *
- * The marker is a unique `--student` token: the worker is spawned as
- * `python -m thesis_review.worker --home <home> --teacher <t> --student <s> ...`,
- * so `--student <marker>` appears in argv and is collision-free per test. (We
- * match on the student token rather than `--home` because WorkerChannel does not
- * yet forward an explicit workerHome — that is Checklist 2's change.)
- */
 async function expectNoOrphan(marker: string, withinMs = 3000): Promise<void> {
   const deadline = Date.now() + withinMs
   let orphans: string[] = []
@@ -99,7 +64,6 @@ async function expectNoOrphan(marker: string, withinMs = 3000): Promise<void> {
   expect(orphans).toEqual([])
 }
 
-/** Count live worker processes carrying `marker` (for positive assertions). */
 function orphanCount(marker: string): number {
   const ps = spawnSync('ps', ['-eo', 'args'], { encoding: 'utf8' })
   return (ps.stdout || '')
@@ -107,7 +71,6 @@ function orphanCount(marker: string): number {
     .filter((line) => line.includes('thesis_review.worker') && line.includes(marker)).length
 }
 
-/** A unique student token so each test's worker is identifiable in `ps`. */
 let tokenSeq = 0
 function uniqueToken(): string {
   return `dsh-resilience-${process.pid}-${++tokenSeq}`
@@ -253,6 +216,69 @@ describe('WorkerSession dispose semantics', () => {
     await expectNoOrphan(token)
     await expect(findText.execute({ needle: 'x' }, exec)).resolves.toBeDefined()
     expect(orphanCount(token)).toBeGreaterThan(0)
+    await session.dispose()
+    await expectNoOrphan(token)
+  })
+})
+
+describe('tainted worker after an aborted op', () => {
+  function stallingRoot(stallOps: string[]): string {
+    return fakeRoot(
+      [
+        'import sys, json, time',
+        `STALL = ${JSON.stringify(stallOps)}`,
+        'for line in sys.stdin:',
+        '    req = json.loads(line)',
+        '    if req.get("op") in STALL:',
+        '        time.sleep(9999)',
+        '    else:',
+        '        sys.stdout.write(json.dumps({"id": req.get("id"), "result": {"ok": True}}) + "\\n")',
+        '        sys.stdout.flush()',
+      ].join('\n'),
+    )
+  }
+
+  it('recycles the worker after an aborted MUTATING op (record_argument_finding)', async () => {
+    const root = stallingRoot(['record_argument_finding'])
+    const token = uniqueToken()
+    const session = new WorkerSession(baseConfig(root, { startupTimeoutMs: 3000, studentId: token }) as Config)
+    const key = 'sess-write'
+    await session.call('__warmup__', {}, key)
+    expect(orphanCount(token)).toBe(1)
+
+    const controller = new AbortController()
+    const pending = session.call('record_argument_finding', { claim_quote: 'x' }, key, controller.signal)
+    setTimeout(() => controller.abort(), 150)
+    const error = await expectRejectsFast(pending, 3000)
+    expect(error.code).toBe('worker_aborted')
+    await expectNoOrphan(token)
+
+    await session.call('__probe__', {}, key)
+    const deadline = Date.now() + 4000
+    while (orphanCount(token) === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(orphanCount(token)).toBe(1)
+    await session.dispose()
+    await expectNoOrphan(token)
+  })
+
+  it('keeps the SAME worker alive after an aborted READ op (find_text)', async () => {
+    const root = stallingRoot(['find_text'])
+    const token = uniqueToken()
+    const session = new WorkerSession(baseConfig(root, { startupTimeoutMs: 3000, studentId: token }) as Config)
+    const key = 'sess-read'
+    await session.call('__warmup__', {}, key)
+    expect(orphanCount(token)).toBe(1)
+
+    const controller = new AbortController()
+    const pending = session.call('find_text', { needle: 'x' }, key, controller.signal)
+    setTimeout(() => controller.abort(), 150)
+    const error = await expectRejectsFast(pending, 3000)
+    expect(error.code).toBe('worker_aborted')
+    // Navigation read abort: Worker may be retained (not recycled).
+    await new Promise((r) => setTimeout(r, 300))
+    expect(orphanCount(token)).toBe(1)
     await session.dispose()
     await expectNoOrphan(token)
   })
