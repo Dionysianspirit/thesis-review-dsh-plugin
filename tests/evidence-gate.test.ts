@@ -12,26 +12,6 @@ import {
 } from './helpers.ts'
 import type { Config } from '../src/config.ts'
 
-/**
- * Evidence gate test — integration against the REAL Python worker.
- *
- * This is the core acceptance proof: the Harness tools reach the main project's
- * evidence gate, and that gate (not this adapter) decides what may be written.
- *
- * Scenarios (fixtures come from thesis_review.fixtures in the MAIN project):
- *  - overclaim: "实验结果表明该方法显著提升了分类准确率。" vs
- *               "准确率由 0.81 提高到 0.83。"  -> real quotes are accepted.
- *  - invented evidence quote                    -> worker rejects (quote_not_in_draft).
- *  - missing claim quote                        -> worker rejects (quote_not_in_draft).
- *  - "再次" wording                             -> worker rejects (repeat_wording).
- *  - more than 3 findings                       -> worker rejects (argument_limit).
- *  - supported claim (0.91 vs 0.72, p<0.01)     -> a finding is NOT written; the
- *                                                 agent may simply commit.
- *  - commit writes reviewed.docx + findings.json.
- *
- * PLUMBING/evidence-gate proof, not a real-model capability test.
- */
-
 const skipReason = integrationSkipReason()
 const root = resolveAgentRoot()
 const python = resolvePython()
@@ -58,6 +38,10 @@ function exec() {
 
 interface Tool {
   execute: (args: unknown, exec: unknown) => Promise<unknown>
+}
+
+function expectDomainRejection(result: unknown, code: string): void {
+  expect(result).toMatchObject({ ok: false, error: { code } })
 }
 
 function makeSession(): {
@@ -111,8 +95,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
     const { session, tools } = makeSession()
     try {
       await tools.thesis_open!.execute({ path: overclaimDocx }, exec())
-      await expect(
-        tools.thesis_record_argument!.execute(
+      expectDomainRejection(
+        await tools.thesis_record_argument!.execute(
           {
             claim_quote: OVERCLAIM_CLAIM,
             evidence_quote: '准确率由 0.50 提高到 0.99，且差异极显著。',
@@ -121,7 +105,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
           },
           exec(),
         ),
-      ).rejects.toMatchObject({ code: 'quote_not_in_draft' })
+        'quote_not_in_draft',
+      )
     } finally {
       await session.dispose()
     }
@@ -131,8 +116,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
     const { session, tools } = makeSession()
     try {
       await tools.thesis_open!.execute({ path: overclaimDocx }, exec())
-      await expect(
-        tools.thesis_record_argument!.execute(
+      expectDomainRejection(
+        await tools.thesis_record_argument!.execute(
           {
             claim_quote: '',
             evidence_quote: OVERCLAIM_EVIDENCE,
@@ -141,7 +126,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
           },
           exec(),
         ),
-      ).rejects.toMatchObject({ code: 'quote_not_in_draft' })
+        'quote_not_in_draft',
+      )
     } finally {
       await session.dispose()
     }
@@ -151,8 +137,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
     const { session, tools } = makeSession()
     try {
       await tools.thesis_open!.execute({ path: overclaimDocx }, exec())
-      await expect(
-        tools.thesis_record_argument!.execute(
+      expectDomainRejection(
+        await tools.thesis_record_argument!.execute(
           {
             claim_quote: OVERCLAIM_CLAIM,
             evidence_quote: OVERCLAIM_EVIDENCE,
@@ -161,7 +147,8 @@ describeOrSkip('evidence gate (real Python worker)', () => {
           },
           exec(),
         ),
-      ).rejects.toMatchObject({ code: 'repeat_wording' })
+        'repeat_wording',
+      )
     } finally {
       await session.dispose()
     }
@@ -181,9 +168,10 @@ describeOrSkip('evidence gate (real Python worker)', () => {
         const res = (await tools.thesis_record_argument!.execute(args, exec())) as { ok: boolean }
         expect(res.ok).toBe(true)
       }
-      await expect(tools.thesis_record_argument!.execute(args, exec())).rejects.toMatchObject({
-        code: 'argument_limit',
-      })
+      expectDomainRejection(
+        await tools.thesis_record_argument!.execute(args, exec()),
+        'argument_limit',
+      )
     } finally {
       await session.dispose()
     }
@@ -225,20 +213,16 @@ describeOrSkip('evidence gate (real Python worker)', () => {
   })
 
   it('supported claim: the agent may choose to write NO finding and still commit', async () => {
-    // This models the "evidence is sufficient -> abandon the finding" branch.
-    // The adapter/agent writes nothing; commit still produces a clean review.
     const { session, tools } = makeSession()
     const outDir = path.join(path.dirname(supportedDocx), 'out')
     try {
       await tools.thesis_open!.execute({ path: supportedDocx }, exec())
-      // Navigate to confirm the claim is backed (0.91 vs 0.72, p<0.01).
       const find = (await tools.thesis_find_text!.execute({ needle: '0.91' }, exec())) as {
         hits: { snippet: string }[]
       }
       expect(find.hits.some((h) => h.snippet.includes('0.72'))).toBe(true)
       expect(find.hits.some((h) => h.snippet.includes('p<0.01'))).toBe(true)
 
-      // Decide NOT to record a finding; commit directly.
       const commit = (await tools.thesis_commit!.execute(
         { draft_id: 'supported', output_dir: outDir },
         exec(),
@@ -246,7 +230,6 @@ describeOrSkip('evidence gate (real Python worker)', () => {
       expect(commit.n_findings).toBe(0)
       const findings = JSON.parse(readFileSync(commit.findings_path, 'utf8')) as unknown[]
       expect(findings).toEqual([])
-      // Sanity: the supported quotes exist and would have been accepted if used.
       expect(SUPPORTED_CLAIM).toContain('0.91')
       expect(SUPPORTED_EVIDENCE).toContain('p<0.01')
     } finally {
