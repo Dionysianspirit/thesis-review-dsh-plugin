@@ -79,7 +79,7 @@ Word / SQLite 历史库 / 格式语言规则 / 字符串召回 / quote 校验 / 
 
 需要本机已具备：
 
-- **Node.js ≥ 20**
+- **Node.js 22.19+ 或 24+**（与 DeepSeek Harness 官方要求一致；DSH 在 Node 20 上会因 `Promise.withResolvers` / `node:zlib.createZstdDecompress` 缺失而无法启动，本插件也随之无法加载）
 - **一个本地的 [`thesis-review-agent`](https://github.com/Dionysianspirit/thesis-review-agent) 检出**，
   并已按主项目 README 完成依赖安装，特别是：
   ```bash

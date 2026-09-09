@@ -53,6 +53,7 @@ const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '
 const pluginEntry = path.join(repoRoot, 'lib', 'index.js')
 const python = process.env.THESIS_REVIEW_PYTHON || process.env.PYTHON || 'python3'
 
+// --- Step 1-2: registration smoke (no worker started) ---
 const ctx = new Context()
 ctx.baseUrl = pathToFileURL(process.cwd()).href + '/'
 
@@ -60,11 +61,16 @@ const systemPrompt = await import('@deepseek-ai/dsh-system-prompt')
 const tools = await import('@deepseek-ai/dsh-tools')
 const plugin = await import(pathToFileURL(pluginEntry).href)
 
+// Real dependency chain: system-prompt -> tools -> our plugin.
 await ctx.plugin(systemPrompt.default ?? systemPrompt)
 await ctx.plugin(tools.default ?? tools)
 
+// thesisReviewAgentPath only needs to be non-empty so the plugin does not fail
+// closed at registration; no tool is executed here, so the worker never starts
+// and no main-repo file is touched.
 await ctx.plugin(plugin, {
   thesisReviewAgentPath: process.env.THESIS_REVIEW_AGENT_PATH || '/nonexistent-for-registration-smoke',
+  enablePreset: true,
   enableHistory: false,
 })
 
@@ -76,8 +82,26 @@ const names = ctx.tools
 
 check('7 core thesis tools registered in a real Cordis ToolRegistry', names.length === 7, `found ${names.length}: ${names.join(', ')}`)
 check('registered set matches expected', JSON.stringify(names) === JSON.stringify(EXPECTED_TOOLS), names.join(', '))
-check('Claim-Evidence preset prompt section contributed', typeof ctx.reflect.get('systemPrompt', false) !== 'undefined')
 
+// Preset section: do NOT settle for "the systemPrompt service exists". Assemble
+// the real prompt and assert our section is actually in the assembled section
+// list with the expected text. That is what proves the section really registered.
+{
+  const systemPromptService = ctx.reflect.get('systemPrompt', false)
+  if (!systemPromptService || typeof systemPromptService.assemble !== 'function') {
+    check('Claim-Evidence preset section present in assembled prompt', false, 'systemPrompt service with assemble() not available')
+  } else {
+    const assembled = await systemPromptService.assemble({})
+    const section = (assembled.sections ?? []).find((s) => s.name === plugin.PRESET_SECTION_NAME)
+    check(
+      'Claim-Evidence preset section present in assembled prompt',
+      Boolean(section) && section.text === plugin.CLAIM_EVIDENCE_PRESET,
+      section ? `section "${section.name}" assembled (text matches preset: ${section.text === plugin.CLAIM_EVIDENCE_PRESET})` : `section "${plugin.PRESET_SECTION_NAME}" NOT found among [${(assembled.sections ?? []).map((s) => s.name).join(', ')}]`,
+    )
+  }
+}
+
+// --- Step 3: real staged dispatch smoke (needs a real checkout + python) ---
 function dispatchSkipReason() {
   const root = process.env.THESIS_REVIEW_AGENT_PATH
   if (!root) return 'THESIS_REVIEW_AGENT_PATH not set'
